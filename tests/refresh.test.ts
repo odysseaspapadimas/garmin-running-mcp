@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { encryptTokens } from "../src/crypto.js";
 import { refreshLatestRun } from "../src/refresh.js";
 import type { Env, Run } from "../src/storage.js";
@@ -89,6 +89,23 @@ describe("manual latest-run refresh", () => {
     const result = await refreshLatestRun(env, { now: () => now, fromTokens: async () => { throw new Error("must not call Garmin"); } });
     expect(result.status).toBe("busy");
     expect(values.refresh_latest_attempt).toBeUndefined();
+  });
+  it("records only a fixed HTTP checkpoint for an upstream failure", async () => {
+    const session = await encryptTokens(tokens, key);
+    const { env, values } = fakeDb(session);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("private request content", { status: 503 }));
+    try {
+      const result = await refreshLatestRun(env, { now: () => now, fromTokens: async (_tokens, safeFetch) => {
+        const response = await safeFetch("https://thegarth.s3.amazonaws.com/oauth_consumer.json");
+        if (!response.ok) throw new Error("upstream failed with private request content");
+        throw new Error("test must not succeed");
+      } });
+      expect(result.status).toBe("upstream_error");
+      expect(values.refresh_latest_error_stage).toBe("create_client_consumer_http_503");
+      expect(JSON.stringify(result)).not.toContain("private request content");
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
   it("returns a fixed error category without leaking upstream exception bodies", async () => {
     const session = await encryptTokens(tokens, key);
