@@ -1,0 +1,35 @@
+{
+  "name": "garmin-running-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.17.0",
+  "scripts": {
+    "check": "tsc --noEmit && tsc -p tsconfig.alchemy.json --noEmit",
+    "test": "vitest run",
+    "deploy": "alchemy deploy --stage prod --env-file .env.prod",
+    "plan": "alchemy plan --stage prod --env-file .env.prod",
+    "dev": "alchemy dev --stage local --env-file .env.prod",
+    "garmin:connect": "node --env-file=.env.prod --import tsx scripts/connect-garmin.ts"
+  },
+  "dependencies": {
+    "@distilled.cloud/cloudflare": "1.0.0-rc.12",
+    "@dofek/garmin-connect": "0.1.49",
+    "@effect/platform-node": "4.0.0-rc.117",
+    "@modelcontextprotocol/server": "2.0.0",
+    "agents": "0.24.0",
+    "alchemy": "2.0.0-beta.79",
+    "effect": "4.0.0-rc.117",
+    "jose": "6.2.12",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260916.1",
+    "@flow-js/garmin-connect": "1.6.22",
+    "@types/node": "26.4.1",
+    "tsx": "4.23.13",
+    "typescript": "5.9.2",
+    "vitest": "5.0.1",
+    "wrangler": "4.133.0"
+  }
+}

@@ -1,0 +1,16 @@
+node_modules/
+.alchemy/
+.wrangler/
+.env*
+!.env.example
+*.local
+coverage/
+dist/
+.private/
+*.fit
+*.gpx
+*.tcx
+*.zip
+*.sqlite*
+tokens*.json
+.DS_Store
