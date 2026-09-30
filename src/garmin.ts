@@ -32,7 +32,7 @@ export async function saveSession(db: D1Database, key: string, tokens: GarminTok
 
 const putState = (db: D1Database, key: string, value: string) => db.prepare("INSERT INTO sync_state(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(key, value).run();
 
-async function getJson(accessToken: string, path: string): Promise<unknown> {
+export async function getJson(accessToken: string, path: string): Promise<unknown> {
   const response = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json", "User-Agent": "GCM-iOS-5.19.1.2" } });
   if (response.status === 204 || response.status === 404) return null;
   if (!response.ok) throw new Error(`Garmin API HTTP ${response.status}`);

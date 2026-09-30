@@ -1,10 +1,11 @@
 import { GarminConnectClient } from "@dofek/garmin-connect";
 import type { GarminTokens } from "@dofek/garmin-connect/types";
 import { decryptTokens } from "./crypto.js";
-import { isRun, normalize, saveSession } from "./garmin.js";
+import { getJson, isRun, normalize, saveSession } from "./garmin.js";
+import { averageLapCadence, safeLaps } from "./laps.js";
 import { publicRun, type Env, type Run } from "./storage.js";
 
-const COOLDOWN_MS = 10 * 60_000;
+const COOLDOWN_MS = 60_000;
 const LEASE_MS = 2 * 60_000;
 const state = (db: D1Database, key: string, value: string) => db.prepare(
   "INSERT INTO sync_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -15,10 +16,13 @@ type Client = Pick<GarminConnectClient, "getActivities" | "getTokens">;
 export interface RefreshOptions {
   now?: () => number;
   fromTokens?: (tokens: GarminTokens, fetchFn: typeof fetch) => Promise<Client>;
+  getLaps?: (accessToken: string, id: string) => Promise<unknown>;
+  wait?: () => Promise<void>;
 }
 
-// This is deliberately NOT a full sync: one activity-list request, no FIT,
-// chart, recovery or historical pagination. Cron enriches partial rows later.
+// This is deliberately NOT a full sync: one activity-list request and, only
+// if laps are missing, one spaced split request. No FIT, chart, recovery or
+// historical pagination. Cron enriches the remaining details later.
 export async function refreshLatestRun(env: Env, options: RefreshOptions = {}) {
   const now = (options.now ?? Date.now)();
   const lease = String(now + LEASE_MS);
@@ -110,13 +114,31 @@ export async function refreshLatestRun(env: Env, options: RefreshOptions = {}) {
             normalized.max_hr_bpm, normalized.avg_cadence_spm, normalized.ascent_m, normalized.descent_m,
             normalized.raw_summary, normalized.updated_at).run();
       }
+      let current = changed ? await latest(env.DB) : cached;
+      let lapsUpdated = false;
+      if (current && !current.raw_laps) {
+        stage = "fetch_laps";
+        await (options.wait ?? (() => new Promise<void>((resolve) => setTimeout(resolve, 5000))))();
+        const accessToken = client.getTokens()?.oauth2.access_token;
+        if (!accessToken) throw new Error("Garmin session unavailable");
+        const laps = await (options.getLaps ?? ((token, runId) => getJson(token, `/activity-service/activity/${runId}/splits`)))(accessToken, current.id);
+        if (laps && typeof laps === "object" && "lapDTOs" in laps && Array.isArray(laps.lapDTOs) && laps.lapDTOs.length) {
+          stage = "cache_laps";
+          await env.DB.prepare("UPDATE runs SET raw_laps=?,avg_cadence_spm=COALESCE(avg_cadence_spm,?) WHERE id=?")
+            .bind(JSON.stringify(laps), averageLapCadence(laps), current.id).run();
+          lapsUpdated = true;
+          current = await latest(env.DB);
+        }
+      }
       stage = "finish_refresh";
-      const current = changed ? await latest(env.DB) : cached;
-      await state(env.DB, "refresh_latest_status", changed ? "updated" : "no_new_run");
+      const updated = changed || lapsUpdated;
+      await state(env.DB, "refresh_latest_status", updated ? "updated" : "no_new_run");
       await env.DB.prepare("DELETE FROM sync_state WHERE key='refresh_latest_error_stage'").run();
-      return { status: changed ? "updated" : "no_new_run", checked_at: new Date(now).toISOString(),
-        latest_run: current ? publicRun(current) : null, details_pending: !current?.raw_detail,
-        ...(changed ? {} : { note: "No newer run is visible in Garmin yet; it may still be processing." }) };
+      return { status: updated ? "updated" : "no_new_run", checked_at: new Date(now).toISOString(),
+        latest_run: current ? publicRun(current) : null,
+        details_pending: !current?.raw_laps, full_details_pending: !current?.raw_detail,
+        laps: current?.raw_laps ? safeLaps(JSON.parse(current.raw_laps)) : [],
+        ...(updated ? {} : { note: current?.raw_laps ? "No newer run is visible in Garmin yet." : "Garmin may still be processing this run's laps; try again later." }) };
     } catch (error) {
       // Unofficial clients may include tokens or request headers in errors.
       // Expose only a fixed category, never the exception or its stack.
@@ -125,7 +147,10 @@ export async function refreshLatestRun(env: Env, options: RefreshOptions = {}) {
         /401|403|auth|token/i.test(message) ? "needs_reauthentication" : "upstream_error";
       await state(env.DB, "refresh_latest_status", category);
       await state(env.DB, "refresh_latest_error_stage", stage);
-      return { status: category, latest_run: view(), checked_at: new Date(now).toISOString() };
+      // Summary may have been cached before the lap request failed.
+      const current = await latest(env.DB);
+      return { status: category, latest_run: current ? publicRun(current) : null,
+        details_pending: !current?.raw_laps, checked_at: new Date(now).toISOString() };
     }
   } finally {
     await env.DB.prepare("DELETE FROM sync_state WHERE key='lease' AND value=?").bind(lease).run();

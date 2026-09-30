@@ -6,7 +6,7 @@ it("exposes bounded cached tools and one explicit refresh through the MCP transp
   const env = { DB: {
     prepare(sql: string) {
       const statement = {
-        first: async () => sql.includes("FROM runs") ? { id: "321", name: "Easy", sport: "running", start_utc: "2026-09-20T08:00:00Z", local_date: "2026-09-20", distance_m: 5000, moving_s: 1800, elapsed_s: 1900, avg_hr_bpm: null, max_hr_bpm: null, avg_cadence_spm: null, ascent_m: null, descent_m: null, raw_summary: '{"calories":300}', raw_detail: '{"metricDescriptors":[{"metricsIndex":0,"key":"heartRate"}],"activityDetailMetrics":[{"metrics":[145]}]}', updated_at: "2026-09-21" } : null,
+        first: async () => sql.includes("FROM runs") ? { id: "321", name: "Easy", sport: "running", start_utc: "2026-09-20T08:00:00Z", local_date: "2026-09-20", distance_m: 5000, moving_s: 1800, elapsed_s: 1900, avg_hr_bpm: null, max_hr_bpm: null, avg_cadence_spm: null, ascent_m: null, descent_m: null, raw_summary: '{"calories":300}', raw_detail: '{"metricDescriptors":[{"metricsIndex":0,"key":"heartRate"}],"activityDetailMetrics":[{"metrics":[145]}]}', raw_laps: '{"lapDTOs":[{"distance":1000,"movingDuration":355,"startLatitude":40}]}', updated_at: "2026-09-21" } : null,
         bind: () => statement,
       };
       return statement;
@@ -38,7 +38,9 @@ it("exposes bounded cached tools and one explicit refresh through the MCP transp
   const details = await decode(await handleMcp(request(4, "tools/call", { name: "run_details", arguments: { id: "321" } }), env, ctx));
   const detailText = JSON.stringify(details);
   expect(detailText).toContain("calories");
-  expect(detailText).toContain("details_pending");
+  expect(detailText).toContain("\\\"details_pending\\\":false");
+  expect(detailText).toContain("pace_sec_per_km");
+  expect(detailText).not.toContain("startLatitude");
   expect(detailText).not.toContain("heartRate");
   const chart = await decode(await handleMcp(request(5, "tools/call", { name: "run_chart", arguments: { id: "321" } }), env, ctx));
   expect(JSON.stringify(chart)).toContain("heartRate");

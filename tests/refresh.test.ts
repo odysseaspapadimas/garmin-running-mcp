@@ -39,6 +39,8 @@ function fakeDb(session: { ciphertext: string; iv: string }) {
             values[String(params[0])] = String(params[1]);
           } else if (sql.includes("INSERT INTO garmin_session")) {
             garminSession = { ciphertext: String(params[0]), iv: String(params[1]) };
+          } else if (sql.includes("UPDATE runs SET raw_laps")) {
+            if (run) run = { ...run, raw_laps: String(params[0]), avg_cadence_spm: Number(params[1]) };
           } else if (sql.includes("INSERT INTO runs")) {
             run = { id: String(params[0]), start_utc: String(params[1]), local_date: String(params[2]), sport: String(params[3]),
               name: String(params[4]), distance_m: Number(params[5]), elapsed_s: Number(params[6]), moving_s: Number(params[7]),
@@ -55,7 +57,7 @@ function fakeDb(session: { ciphertext: string; iv: string }) {
 }
 
 describe("manual latest-run refresh", () => {
-  it("checks only five activity summaries, caches one run, then enforces a 10-minute cooldown", async () => {
+  it("checks recent activities and lap splits, caches both, then enforces a one-minute cooldown", async () => {
     const { ciphertext, iv } = await encryptTokens(tokens, key);
     const { env, values, getRun } = fakeDb({ ciphertext, iv });
     let requests = 0;
@@ -67,20 +69,36 @@ describe("manual latest-run refresh", () => {
         return [activity];
       } } as never;
     };
-    const first = await refreshLatestRun(env, { now: () => now, fromTokens });
+    const getLaps = async () => ({ lapDTOs: [{ distance: 1000, movingDuration: 360, averageHR: 160, startLatitude: 40 }] });
+    const first = await refreshLatestRun(env, { now: () => now, fromTokens, getLaps, wait: async () => {} });
     expect(first.status).toBe("updated");
     expect(first.latest_run?.pace_sec_per_km).toBe(360);
-    expect("details_pending" in first && first.details_pending).toBe(true);
+    expect("details_pending" in first && first.details_pending).toBe(false);
+    expect("laps" in first && first.laps).toMatchObject([{ pace_sec_per_km: 360 }]);
+    expect(JSON.stringify(first)).not.toContain("startLatitude");
     expect(getRun()?.raw_detail).toBeNull();
     expect(values.lease).toBeUndefined();
-    const second = await refreshLatestRun(env, { now: () => now + 60_000, fromTokens });
+    const second = await refreshLatestRun(env, { now: () => now + 30_000, fromTokens, getLaps, wait: async () => {} });
     expect(second.status).toBe("cooldown");
-    expect(second.retry_after_seconds).toBe(540);
+    expect(second.retry_after_seconds).toBe(30);
     expect(requests).toBe(1);
-    const third = await refreshLatestRun(env, { now: () => now + 10 * 60_000, fromTokens });
+    const third = await refreshLatestRun(env, { now: () => now + 60_000, fromTokens, getLaps, wait: async () => {} });
     expect(third.status).toBe("no_new_run");
-    expect("note" in third && third.note).toContain("processing");
+    expect("note" in third && third.note).toContain("No newer run");
     expect(requests).toBe(2);
+  });
+  it("enriches laps later when Garmin initially has no lap data", async () => {
+    const session = await encryptTokens(tokens, key);
+    const { env, getRun } = fakeDb(session);
+    const fromTokens = async () => ({ getTokens: () => tokens, getActivities: async () => [activity] }) as never;
+    const empty = await refreshLatestRun(env, { now: () => now, fromTokens, getLaps: async () => null, wait: async () => {} });
+    expect(empty.status).toBe("updated");
+    expect("details_pending" in empty && empty.details_pending).toBe(true);
+    const completed = await refreshLatestRun(env, { now: () => now + 60_000, fromTokens,
+      getLaps: async () => ({ lapDTOs: [{ distance: 1000, movingDuration: 350 }] }), wait: async () => {} });
+    expect(completed.status).toBe("updated");
+    expect("details_pending" in completed && completed.details_pending).toBe(false);
+    expect(getRun()?.raw_laps).toContain("lapDTOs");
   });
   it("returns busy without calling Garmin when the scheduled sync holds the lease", async () => {
     const session = await encryptTokens(tokens, key);
