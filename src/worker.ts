@@ -1,5 +1,4 @@
 import { assertAccess } from "./access.js";
-import { syncOnce } from "./garmin.js";
 import { handleMcp } from "./mcp.js";
 import type { Env } from "./storage.js";
 
@@ -12,8 +11,5 @@ export default {
       return new Response("Unauthorized", { status: 401, headers: { "Cache-Control": "no-store" } });
     }
     return handleMcp(request, env, ctx);
-  },
-  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(syncOnce(env));
   },
 } satisfies ExportedHandler<Env>;

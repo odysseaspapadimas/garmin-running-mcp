@@ -10,7 +10,7 @@ export function safeDetail(summaryJson: string) {
 
 export function safeChart(detailJson: string | null | undefined, offset: number, limit: number) {
   if (!detailJson) return { samples: [], chart_units: {}, offset, next_offset: null };
-  const detail = JSON.parse(detailJson) as {
+  const detail = (JSON.parse(detailJson) ?? {}) as {
     metricDescriptors?: { metricsIndex: number; key: string; unit?: { key?: string } }[];
     activityDetailMetrics?: { metrics: (number | null)[] }[];
   };

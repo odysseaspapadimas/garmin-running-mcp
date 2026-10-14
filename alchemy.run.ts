@@ -64,7 +64,7 @@ const Infrastructure = Effect.gen(function* () {
           "https://chatgpt.com/connector/oauth/*",
         ],
       },
-      grant: { accessTokenLifetime: "15m", sessionDuration: "168h" },
+      grant: { accessTokenLifetime: "15m", sessionDuration: "8760h" }, // 365-day OAuth grant.
     },
   });
   const worker = yield* Cloudflare.Worker("RunningMcp", {
@@ -72,7 +72,7 @@ const Infrastructure = Effect.gen(function* () {
     main: "./src/worker.ts",
     workersDev: true,
     compatibility: { date: "2026-09-20", flags: ["nodejs_compat"] },
-    crons: ["17 */6 * * *"],
+    crons: [], // Post-run detail is fetched explicitly via refresh_latest_run.
     access,
     env: {
       DB: db,

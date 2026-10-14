@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { encryptTokens } from "../src/crypto.js";
-import { refreshLatestRun } from "../src/refresh.js";
+import { refreshLatestRun as refresh, type RefreshOptions } from "../src/refresh.js";
+
+const zones = [{ zoneNumber: 4, secsInZone: 900, zoneLowBoundary: 150, privateField: "hidden" }];
+const chart = { metricDescriptors: [{ metricsIndex: 0, key: "heartRate" }, { metricsIndex: 1, key: "latitude" }],
+  activityDetailMetrics: [{ metrics: [161, 40] }] };
+const refreshLatestRun = (env: Env, options: RefreshOptions) => refresh(env, {
+  getZones: async () => zones, getDetail: async () => chart, ...options,
+});
 import type { Env, Run } from "../src/storage.js";
 import type { ConnectActivitySummary, GarminTokens } from "@dofek/garmin-connect/types";
 
@@ -39,6 +46,10 @@ function fakeDb(session: { ciphertext: string; iv: string }) {
             values[String(params[0])] = String(params[1]);
           } else if (sql.includes("INSERT INTO garmin_session")) {
             garminSession = { ciphertext: String(params[0]), iv: String(params[1]) };
+          } else if (sql.includes("UPDATE runs SET raw_hr_zones")) {
+            if (run) run = { ...run, raw_hr_zones: String(params[0]) };
+          } else if (sql.includes("UPDATE runs SET raw_detail")) {
+            if (run) run = { ...run, raw_detail: String(params[0]) };
           } else if (sql.includes("UPDATE runs SET raw_laps")) {
             if (run) run = { ...run, raw_laps: String(params[0]), avg_cadence_spm: Number(params[1]) };
           } else if (sql.includes("INSERT INTO runs")) {
@@ -76,11 +87,16 @@ describe("manual latest-run refresh", () => {
     expect("details_pending" in first && first.details_pending).toBe(false);
     expect("laps" in first && first.laps).toMatchObject([{ pace_sec_per_km: 360 }]);
     expect(JSON.stringify(first)).not.toContain("startLatitude");
-    expect(getRun()?.raw_detail).toBeNull();
+    expect(getRun()?.raw_detail).toContain("heartRate");
+    expect("hr_time_in_zones" in first && first.hr_time_in_zones).toEqual([{ zoneNumber: 4, secsInZone: 900, zoneLowBoundary: 150 }]);
+    expect("data_status" in first && first.data_status).toEqual({ laps: "available", hr_zones: "available", chart: "available" });
+    expect("full_details_pending" in first && first.full_details_pending).toBe(false);
+    expect(JSON.stringify(first)).not.toContain("hidden");
+    expect(JSON.stringify(first)).not.toContain("latitude");
     expect(values.lease).toBeUndefined();
     const second = await refreshLatestRun(env, { now: () => now + 30_000, fromTokens, getLaps, wait: async () => {} });
     expect(second.status).toBe("cooldown");
-    expect(second.retry_after_seconds).toBe(30);
+    expect("retry_after_seconds" in second && second.retry_after_seconds).toBe(30);
     expect(requests).toBe(1);
     const third = await refreshLatestRun(env, { now: () => now + 60_000, fromTokens, getLaps, wait: async () => {} });
     expect(third.status).toBe("no_new_run");
@@ -100,7 +116,55 @@ describe("manual latest-run refresh", () => {
     expect("details_pending" in completed && completed.details_pending).toBe(false);
     expect(getRun()?.raw_laps).toContain("lapDTOs");
   });
-  it("returns busy without calling Garmin when the scheduled sync holds the lease", async () => {
+  it("retries missing HR zones and chart for an unchanged summary, but does not refetch complete sections", async () => {
+    const { env } = fakeDb(await encryptTokens(tokens, key));
+    const fromTokens = async () => ({ getTokens: () => tokens, getActivities: async () => [activity] }) as never;
+    const getLaps = vi.fn(async () => ({ lapDTOs: [{ distance: 1000, movingDuration: 360 }] }));
+    const getZones = vi.fn().mockResolvedValueOnce(null).mockResolvedValue(zones);
+    const getDetail = vi.fn().mockResolvedValueOnce(null).mockResolvedValue(chart);
+    const options = { fromTokens, getLaps, getZones, getDetail, wait: async () => {} };
+    const first = await refreshLatestRun(env, { ...options, now: () => now });
+    expect("data_status" in first && first.data_status).toEqual({ laps: "available", hr_zones: "unavailable", chart: "unavailable" });
+    const second = await refreshLatestRun(env, { ...options, now: () => now + 60_000 });
+    expect(second.status).toBe("updated");
+    expect("full_details_pending" in second && second.full_details_pending).toBe(false);
+    await refreshLatestRun(env, { ...options, now: () => now + 120_000 });
+    expect(getLaps).toHaveBeenCalledTimes(1);
+    expect(getZones).toHaveBeenCalledTimes(2);
+    expect(getDetail).toHaveBeenCalledTimes(2);
+  });
+  it("returns partial cached detail if a later request fails and retries on the next refresh", async () => {
+    const { env, values } = fakeDb(await encryptTokens(tokens, key));
+    const fromTokens = async () => ({ getTokens: () => tokens, getActivities: async () => [activity] }) as never;
+    const getLaps = async () => ({ lapDTOs: [{ distance: 1000, movingDuration: 360 }] });
+    const failed = await refreshLatestRun(env, { now: () => now, fromTokens, getLaps,
+      getZones: async () => { throw new Error("Garmin API HTTP 503 private"); }, wait: async () => {} });
+    expect(failed.status).toBe("upstream_error");
+    expect("data_status" in failed && failed.data_status).toEqual({ laps: "available", hr_zones: "not_fetched", chart: "not_fetched" });
+    expect(values.refresh_latest_error_stage).toBe("fetch_hr_zones");
+    expect(values.lease).toBeUndefined();
+    expect(JSON.stringify(failed)).not.toContain("private");
+    const retried = await refreshLatestRun(env, { now: () => now + 60_000, fromTokens, getLaps, wait: async () => {} });
+    expect(retried.status).toBe("updated");
+    expect("full_details_pending" in retried && retried.full_details_pending).toBe(false);
+  });
+  it("invalidates and refetches detail when Garmin changes the summary", async () => {
+    const { env } = fakeDb(await encryptTokens(tokens, key));
+    let summary = activity;
+    const fromTokens = async () => ({ getTokens: () => tokens, getActivities: async () => [summary] }) as never;
+    const getZones = vi.fn(async () => zones);
+    const getDetail = vi.fn(async () => chart);
+    const getLaps = async () => ({ lapDTOs: [{ distance: 1000, movingDuration: 360 }] });
+    const options = { fromTokens, getZones, getDetail, getLaps, wait: async () => {} };
+    await refreshLatestRun(env, { ...options, now: () => now });
+    summary = { ...activity, averageHR: 162 };
+    const result = await refreshLatestRun(env, { ...options, now: () => now + 60_000 });
+    expect(result.status).toBe("updated");
+    expect(result.latest_run?.avg_hr_bpm).toBe(162);
+    expect(getZones).toHaveBeenCalledTimes(2);
+    expect(getDetail).toHaveBeenCalledTimes(2);
+  });
+  it("returns busy without calling Garmin when another refresh holds the lease", async () => {
     const session = await encryptTokens(tokens, key);
     const { env, values } = fakeDb(session);
     values.lease = String(now + 300_000);
