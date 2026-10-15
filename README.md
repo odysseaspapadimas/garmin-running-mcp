@@ -14,8 +14,8 @@ Self-hosted Garmin Connect → ChatGPT/AI-agent integration for a personal runni
 
 ## Requirements
 
-- Node 22+, pnpm 10.17.0, a Cloudflare account with Workers, D1, R2 and Zero Trust Access. R2 may require a billing method. A ChatGPT plan/UI that supports private custom MCP apps and OAuth (or another compatible MCP client).
-- An Alchemy `default` Cloudflare OAuth profile with access to your account (`pnpm exec alchemy profile show`). For one-time Garmin-session upload, Wrangler must separately have D1 access (`pnpm exec wrangler login`). Use the **same Cloudflare account** in both.
+- Node 24.11.1+ (required by Alchemy beta.83), pnpm 10.17.0, a Cloudflare account with Workers, D1, R2 and Zero Trust Access. R2 may require a billing method. A ChatGPT plan/UI that supports private custom MCP apps and OAuth (or another compatible MCP client).
+- An Alchemy `default` Cloudflare OAuth profile with access to your account (`pnpm exec alchemy profile show`). Configure it with `ALCHEMY_TUI=1 pnpm exec alchemy profile edit --profile default --add Cloudflare` in an interactive terminal. The override is needed when Pi is on PATH because Alchemy otherwise detects even a human shell as non-interactive. Include the deployment permissions listed below, including Zero Trust organization/IdP reads and Access app/policy management. For one-time Garmin-session upload, Wrangler must separately have D1 access (`pnpm exec wrangler login`). Use the **same Cloudflare account** in both.
 - Your exact Cloudflare Access login email. If you don't have a Zero Trust organization, choose an available `*.cloudflareaccess.com` team domain; otherwise Alchemy discovers the existing domain without changing the organization.
 
 ## Deploy
